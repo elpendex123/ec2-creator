@@ -1,0 +1,237 @@
+// Jenkinsfile.local.validate
+// Pipeline 4: Validate — Run Tests, Validate API, Performance Check
+// Connects to running server (from DEPLOY pipeline)
+// No checkout or venv recreation — only test execution
+
+pipeline {
+    agent any
+
+    environment {
+        PYTHON_VERSION = '3.11'
+        PROJECT_NAME = 'ec2-creator'
+        API_HOST = 'localhost'
+        API_PORT = '8000'
+        API_URL = 'http://localhost:8000'
+        API_PID_FILE = '/tmp/ec2-creator.pid'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 10, unit: 'MINUTES')
+        timestamps()
+    }
+
+    stages {
+        stage('Verify Server Running') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Verifying API server is running ==="
+
+                        if [ ! -f "${API_PID_FILE}" ]; then
+                            echo "✗ PID file not found: ${API_PID_FILE}"
+                            exit 1
+                        fi
+
+                        SERVER_PID=$(cat ${API_PID_FILE})
+                        echo "Server PID: $SERVER_PID"
+
+                        # Verify process is running
+                        if ! ps -p $SERVER_PID > /dev/null; then
+                            echo "✗ Server process $SERVER_PID is not running"
+                            exit 1
+                        fi
+
+                        echo "✓ Server process is alive"
+                    '''
+                }
+            }
+        }
+
+        stage('Wait for Server') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Waiting for API server to be responsive ==="
+
+                        MAX_RETRIES=5
+                        RETRY_COUNT=0
+
+                        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                            if curl -s -f ${API_URL}/health > /dev/null 2>&1; then
+                                echo "✓ API server is responsive"
+                                exit 0
+                            fi
+
+                            RETRY_COUNT=$((RETRY_COUNT + 1))
+                            echo "Waiting for API... (attempt $RETRY_COUNT/$MAX_RETRIES)"
+                            sleep 2
+                        done
+
+                        echo "✗ API server is not responding"
+                        exit 1
+                    '''
+                }
+            }
+        }
+
+        stage('Run Integration Tests') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Running API integration tests ==="
+                        python3 test_api.py 2>&1 | tee validation-results.txt
+                        TEST_RESULT=${PIPESTATUS[0]}
+
+                        if [ $TEST_RESULT -eq 0 ]; then
+                            echo "✓ All integration tests passed"
+                        else
+                            echo "⚠ Some integration tests failed"
+                        fi
+
+                        exit $TEST_RESULT
+                    '''
+                }
+            }
+        }
+
+        stage('Validate API Endpoints') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Validating all API endpoints ==="
+
+                        # Test health endpoint
+                        echo "1. Testing GET /health"
+                        curl -s -X GET ${API_URL}/health | python3 -m json.tool
+
+                        # Test instances endpoint
+                        echo -e "\n2. Testing GET /instances"
+                        curl -s -X GET ${API_URL}/instances | python3 -m json.tool
+
+                        # Test OpenAPI schema
+                        echo -e "\n3. Testing OpenAPI schema"
+                        curl -s -X GET ${API_URL}/openapi.json | python3 -c "import sys, json; json.load(sys.stdin); print('✓ Valid OpenAPI schema')"
+
+                        # Test Swagger UI
+                        echo -e "\n4. Testing Swagger UI"
+                        STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${API_URL}/docs)
+                        if [ "$STATUS" = "200" ]; then
+                            echo "✓ Swagger UI is accessible at ${API_URL}/docs"
+                        else
+                            echo "✗ Swagger UI returned status $STATUS"
+                            exit 1
+                        fi
+
+                        echo -e "\n✓ All endpoint validations passed"
+                    '''
+                }
+            }
+        }
+
+        stage('Performance Check') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Running performance checks ==="
+
+                        echo "Measuring response times for key endpoints..."
+
+                        # Health check response time
+                        echo -e "\nHealth endpoint:"
+                        time curl -s -X GET ${API_URL}/health > /dev/null
+
+                        # Instances endpoint response time
+                        echo -e "\nInstances endpoint:"
+                        time curl -s -X GET ${API_URL}/instances > /dev/null
+
+                        echo -e "\n✓ Performance checks completed"
+                    '''
+                }
+            }
+        }
+
+        stage('Generate Validation Report') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Generating validation report ==="
+
+                        mkdir -p validation-artifacts
+
+                        # Create summary report
+                        cat > validation-artifacts/report.txt <<EOF
+╔════════════════════════════════════════════════════════════════╗
+║              API VALIDATION TEST REPORT                        ║
+╚════════════════════════════════════════════════════════════════╝
+
+Generated: $(date)
+API URL: ${API_URL}
+
+Test Results:
+─────────────────────────────────────────────────────────────────
+EOF
+
+                        cat validation-results.txt >> validation-artifacts/report.txt
+
+                        echo "✓ Validation report generated"
+                        echo ""
+                        cat validation-artifacts/report.txt
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'validation-artifacts/**', allowEmptyArchive: true
+        }
+
+        success {
+            script {
+                sh '''
+                    echo ""
+                    echo "╔════════════════════════════════════════════════════════════════╗"
+                    echo "║           ✓ ALL VALIDATIONS PASSED - API READY                ║"
+                    echo "╚════════════════════════════════════════════════════════════════╝"
+                    echo ""
+                    echo "API Details:"
+                    echo "  URL: ${API_URL}"
+                    echo "  Swagger UI: ${API_URL}/docs"
+                    echo "  ReDoc: ${API_URL}/redoc"
+                    echo ""
+                '''
+            }
+        }
+
+        failure {
+            script {
+                sh '''
+                    echo ""
+                    echo "╔════════════════════════════════════════════════════════════════╗"
+                    echo "║        ✗ VALIDATION FAILED - CHECK LOGS ABOVE                 ║"
+                    echo "╚════════════════════════════════════════════════════════════════╝"
+                    echo ""
+                '''
+            }
+        }
+
+        always {
+            script {
+                sh '''
+                    echo "=== Stopping API server ==="
+                    if [ -f "${API_PID_FILE}" ]; then
+                        SERVER_PID=$(cat ${API_PID_FILE})
+                        echo "Killing server PID: $SERVER_PID"
+                        kill $SERVER_PID 2>/dev/null || true
+                        sleep 1
+                        kill -9 $SERVER_PID 2>/dev/null || true
+                        rm -f ${API_PID_FILE}
+                        echo "✓ Server stopped"
+                    fi
+                '''
+            }
+        }
+    }
+}

@@ -1,0 +1,130 @@
+// Jenkinsfile.local.test
+// Pipeline 2: Test — Coverage, Security, Dependencies
+// Reuses stashed workspace from BUILD pipeline (no checkout or venv recreation)
+
+pipeline {
+    agent any
+
+    environment {
+        PYTHON_VERSION = '3.11'
+        PROJECT_NAME = 'ec2-creator'
+        VENV_DIR = "${WORKSPACE}/venv"
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 10, unit: 'MINUTES')
+        timestamps()
+    }
+
+    stages {
+        stage('Unstash Workspace') {
+            steps {
+                unstash 'workspace'
+                script {
+                    echo "✓ Workspace restored from BUILD pipeline"
+                }
+            }
+        }
+
+        stage('Coverage Analysis') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Analyzing code coverage ==="
+                        pytest tests/ \
+                            --cov=app \
+                            --cov-report=term-missing \
+                            --cov-report=html:coverage-report \
+                            --cov-fail-under=70 || true
+                        echo "✓ Coverage analysis completed"
+                    '''
+                }
+            }
+        }
+
+        stage('Security Scan') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Running security checks ==="
+
+                        # Check for hardcoded secrets
+                        echo "Checking for hardcoded secrets..."
+                        grep -r "api_key\|password\|secret\|token" app/ --include="*.py" || echo "✓ No obvious secrets found"
+
+                        # Check for unsafe patterns
+                        echo "Checking for unsafe patterns..."
+                        grep -r "execute\|query" app/services/*.py --include="*.py" || echo "✓ No unsafe SQL patterns detected"
+
+                        echo "✓ Security scanning completed"
+                    '''
+                }
+            }
+        }
+
+        stage('Dependency Check') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Checking dependencies ==="
+                        pip list --outdated || echo "✓ All dependencies up to date"
+                        echo "✓ Dependency check completed"
+                    '''
+                }
+            }
+        }
+
+        stage('Archive Test Reports') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Archiving test reports ==="
+                        mkdir -p test-artifacts
+                        cp -r coverage-report test-artifacts/ 2>/dev/null || true
+                        echo "✓ Reports archived"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            publishHTML([
+                reportDir: 'coverage-report',
+                reportFiles: 'index.html',
+                reportName: 'Coverage Report',
+                allowMissing: true
+            ])
+
+            archiveArtifacts artifacts: 'test-artifacts/**', allowEmptyArchive: true
+        }
+
+        success {
+            script {
+                echo "✓ TEST complete — triggering DEPLOY pipeline"
+                build job: 'ec2-creator-deploy-local', wait: true, propagate: false
+            }
+        }
+
+        failure {
+            script {
+                echo "✗ TEST failed — see logs above"
+            }
+        }
+
+        always {
+            cleanWs(
+                deleteDirs: true,
+                patterns: [
+                    [pattern: '**/*.pyc', type: 'INCLUDE'],
+                    [pattern: '**/__pycache__', type: 'INCLUDE']
+                ]
+            )
+        }
+    }
+}

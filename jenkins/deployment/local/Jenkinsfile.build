@@ -1,6 +1,7 @@
 // Jenkinsfile.local.build
-// Stage 1: Build & Unit Tests
+// Pipeline 1: Build — Setup, Lint, Unit Tests
 // Handles dependency installation, linting, and unit test execution
+// Outputs: stashed workspace with venv for downstream pipelines
 
 pipeline {
     agent any
@@ -27,11 +28,11 @@ pipeline {
             }
         }
 
-        stage('Setup Environment') {
+        stage('Venv Setup') {
             steps {
                 script {
                     sh '''
-                        echo "=== Setting up Python environment ==="
+                        echo "=== Setting up Python virtual environment ==="
                         python3 -m venv ${VENV_DIR}
                         . ${VENV_DIR}/bin/activate
                         python3 -m pip install --upgrade pip
@@ -49,22 +50,19 @@ pipeline {
                         echo "=== Installing project dependencies ==="
                         pip install -r requirements.txt
                         echo "✓ Dependencies installed"
-                        pip list
                     '''
                 }
             }
         }
 
-        stage('Lint Code') {
+        stage('Lint') {
             steps {
                 script {
                     sh '''
                         . ${VENV_DIR}/bin/activate
                         echo "=== Running flake8 linter ==="
-                        flake8 app/ --max-line-length=120 --extend-ignore=E203,W503 \
-                            --format=json > flake8-report.json || true
                         flake8 app/ --max-line-length=120 --extend-ignore=E203,W503
-                        echo "✓ Linting completed"
+                        echo "✓ Linting passed"
                     '''
                 }
             }
@@ -75,7 +73,7 @@ pipeline {
                 script {
                     sh '''
                         . ${VENV_DIR}/bin/activate
-                        echo "=== Running pytest ==="
+                        echo "=== Running unit tests with pytest ==="
                         pytest tests/ -v \
                             --tb=short \
                             --junit-xml=test-results.xml \
@@ -88,17 +86,22 @@ pipeline {
             }
         }
 
-        stage('Archive Artifacts') {
+        stage('Stash Workspace') {
             steps {
                 script {
                     sh '''
-                        echo "=== Archiving test and lint reports ==="
+                        echo "=== Preparing workspace for next pipeline ==="
+                        # Archive essential artifacts
                         mkdir -p build-artifacts
                         cp test-results.xml build-artifacts/ 2>/dev/null || true
                         cp coverage.xml build-artifacts/ 2>/dev/null || true
-                        cp flake8-report.json build-artifacts/ 2>/dev/null || true
                         echo "✓ Artifacts archived"
                     '''
+                }
+
+                stash name: 'workspace', includes: '**', excludes: '.git/**,.git'
+                script {
+                    echo "✓ Workspace stashed for TEST pipeline"
                 }
             }
         }
@@ -111,7 +114,7 @@ pipeline {
             publishHTML([
                 reportDir: 'htmlcov',
                 reportFiles: 'index.html',
-                reportName: 'Code Coverage Report',
+                reportName: 'Coverage Report',
                 allowMissing: true,
                 alwaysLinkToLastBuild: false
             ])
@@ -121,32 +124,15 @@ pipeline {
 
         success {
             script {
-                echo "✓ Build stage completed successfully"
-                build job: 'ec2-creator-qa', wait: true, propagate: false
+                echo "✓ BUILD complete — triggering TEST pipeline"
+                build job: 'ec2-creator-test', wait: true, propagate: false
             }
         }
 
         failure {
             script {
-                echo "✗ Build stage failed - see logs above"
+                echo "✗ BUILD failed — see logs above"
             }
-        }
-
-        unstable {
-            script {
-                echo "⚠ Build stage unstable - review test results"
-            }
-        }
-
-        always {
-            cleanWs(
-                deleteDirs: true,
-                patterns: [
-                    [pattern: '**/*.pyc', type: 'INCLUDE'],
-                    [pattern: '**/__pycache__', type: 'INCLUDE'],
-                    [pattern: '**/venv/**', type: 'INCLUDE']
-                ]
-            )
         }
     }
 }

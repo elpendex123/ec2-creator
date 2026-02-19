@@ -1,138 +1,105 @@
 # Jenkins Local Pipelines — Quick Reference
 
-## The 4 Pipelines
+## The 4 Consolidated Pipelines (No Duplication)
 
 ```
-┌─────────────────────┐
-│   BUILD PIPELINE    │  (10-15 min)
-│ Jenkinsfile.local.  │
-│        build        │
-├─────────────────────┤
-│ • Checkout code     │
-│ • Setup Python venv │
-│ • Install deps      │
-│ • Lint (flake8)     │
-│ • Unit tests        │
-│ • Archive reports   │
-└──────────┬──────────┘
-           │ Success
-           ↓
-┌─────────────────────┐
-│    QA PIPELINE      │  (5-10 min)
-│ Jenkinsfile.local.  │
-│         qa          │
-├─────────────────────┤
-│ • Coverage analysis │
-│ • Security scan     │
-│ • Dependency check  │
-│ • Quality metrics   │
-│ • Archive reports   │
-└──────────┬──────────┘
-           │ Success
-           ↓
-┌─────────────────────┐
-│  DEPLOY PIPELINE    │  (5-10 min)
-│ Jenkinsfile.local.  │
-│       deploy        │
-├─────────────────────┤
-│ • Start API server  │
-│ • Health checks     │
-│ • Verify endpoints  │
-│ • Server: 8000      │
-└──────────┬──────────┘
-           │ Success
-           ↓
-┌─────────────────────┐
-│   TEST PIPELINE     │  (5-10 min)
-│ Jenkinsfile.local.  │
-│ integration-test    │
-├─────────────────────┤
-│ • Run test_api.py   │
-│ • Validate endpoints│
-│ • Performance check │
-│ • Test reports      │
-└─────────────────────┘
-           │ Success
-           ↓
-        ✓ READY
+BUILD (10-15m)      TEST (5-10m)        DEPLOY (5-10m)       VALIDATE (5-10m)
+┌────────────────┐  ┌────────────────┐  ┌────────────────┐    ┌────────────────┐
+│ 1. Checkout    │  │ 6. Coverage    │  │ 9. Start       │    │12. Run Tests   │
+│ 2. Venv Setup  │→ │ 7. Security    │→ │10. Health      │───→│13. Validate API│
+│ 3. Install     │  │ 8. Dep Check   │  │11. Routes      │    │14. Performance │
+│ 4. Lint        │  │                │  │                │    │15. Archive     │
+│ 5. Unit Tests  │  │ (unstashes)    │  │ (unstashes)    │    │(kills server)  │
+│                │  │ (no checkout)  │  │ (no checkout)  │    │                │
+│ (stashes)      │  │ (no pip)       │  │ (server runs)  │    │(connects to    │
+└────────────────┘  └────────────────┘  └────────────────┘    │running server) │
+                                                               └────────────────┘
 ```
+
+**Key:** Venv created once, reused 3 times. No repeated work.
 
 ---
 
-## What Each Pipeline Does
+## Pipeline 1: BUILD
+**File:** `jenkins/deployment/local/Jenkinsfile.build`
 
-### 1️⃣ BUILD PIPELINE — `Jenkinsfile.local.build`
+**Does:**
+- Checkout code
+- Setup Python 3.11 venv
+- Install dependencies (requirements.txt)
+- Lint code (flake8)
+- Run unit tests (pytest + coverage)
+- Stash workspace for next pipelines
 
-**Purpose:** Prepare and test the codebase
+**Output:**
+- test-results.xml
+- coverage.xml
+- htmlcov/ (coverage HTML)
 
-**Key Steps:**
-```
-Code → Python venv → Dependencies → Linting → Unit Tests → Reports
-```
-
-**Checks:**
-- ✓ Code passes flake8
-- ✓ Unit tests pass
-- ✓ Coverage metrics generated
-
-**Triggers Next:** QA Pipeline
-
----
-
-### 2️⃣ QA PIPELINE — `Jenkinsfile.local.qa`
-
-**Purpose:** Ensure code quality and security
-
-**Key Steps:**
-```
-Venv → Coverage Analysis → Security Scan → Dependency Check → Reports
-```
-
-**Checks:**
-- ✓ Coverage ≥ 70%
-- ✓ No hardcoded secrets
-- ✓ Dependencies up to date
-
-**Triggers Next:** Deployment Pipeline
+**Triggers:** TEST on success
 
 ---
 
-### 3️⃣ DEPLOYMENT PIPELINE — `Jenkinsfile.local.deploy`
+## Pipeline 2: TEST
+**File:** `jenkins/deployment/local/Jenkinsfile.test`
 
-**Purpose:** Start the API server locally
+**Does:**
+- **Unstash workspace from BUILD** (no checkout, no venv recreation, no pip install)
+- Coverage analysis (enforce ≥70%)
+- Security scanning (hardcoded secrets check)
+- Dependency check (outdated packages)
 
-**Key Steps:**
-```
-Kill old process → Start uvicorn → Health check → Verify endpoints → Ready
-```
+**Key Difference:** No duplicate stages from BUILD
 
-**Result:**
-- ✓ Server running on `http://localhost:8000`
-- ✓ Swagger UI at `http://localhost:8000/docs`
-- ✓ Logs in `${WORKSPACE}/app.log`
+**Output:**
+- coverage-report/ (HTML report)
 
-**Triggers Next:** Integration Test Pipeline
+**Triggers:** DEPLOY on success
 
 ---
 
-### 4️⃣ INTEGRATION TEST PIPELINE — `Jenkinsfile.local.integration-test`
+## Pipeline 3: DEPLOY
+**File:** `jenkins/deployment/local/Jenkinsfile.deploy`
 
-**Purpose:** Test the deployed API
+**Does:**
+- **Unstash workspace from BUILD** (no checkout, no venv recreation, no pip install)
+- Pre-checks (kill existing process on port 8000)
+- Start FastAPI server on localhost:8000
+- Health check (poll /health, retry 10x)
+- Verify routes (/instances, /docs)
 
-**Key Steps:**
-```
-Wait for server → Run test_api.py → Validate endpoints → Performance check → Reports
-```
+**Key Difference:** No duplicate stages from BUILD, server keeps running
+
+**Server Info:**
+- URL: http://localhost:8000
+- Swagger UI: http://localhost:8000/docs
+- PID saved to: /tmp/ec2-creator.pid
+- Logs: ${WORKSPACE}/app.log
+
+**Triggers:** VALIDATE on success
+
+---
+
+## Pipeline 4: VALIDATE
+**File:** `jenkins/deployment/local/Jenkinsfile.validate`
+
+**Does:**
+- Verify server is running (check PID file)
+- Wait for server (retry 5x)
+- Run integration tests (test_api.py)
+- Validate endpoints (/health, /instances, /docs, /openapi.json)
+- Performance check (time key endpoints)
+- Archive results
+- **Kill server** (cleanup in post block)
+
+**Key Difference:** Connects to already-running server, doesn't start its own
 
 **Tests Run:**
-- ✓ Health endpoint
-- ✓ List instances
-- ✓ Invalid instance type detection
-- ✓ Invalid AMI detection
-- ✓ Swagger UI
-
-**Final Output:**
-- ✓ All tests passed OR ✗ Some tests failed
+1. Health check
+2. List instances
+3. Invalid instance type (expects 400)
+4. Invalid AMI (expects 400)
+5. Swagger UI availability
 
 ---
 
@@ -140,214 +107,174 @@ Wait for server → Run test_api.py → Validate endpoints → Performance check
 
 ### Start Full Pipeline Chain
 
-```bash
-# In Jenkins UI
+**Jenkins UI:**
+```
 1. Go to: http://jenkins:8080/job/ec2-creator-build
 2. Click "Build Now"
-3. Wait ~40 minutes for all 4 pipelines to complete
+3. All 4 pipelines run in sequence
 ```
 
-Or with curl:
+**Or with curl:**
 ```bash
 curl -X POST http://jenkins:8080/job/ec2-creator-build/build \
   -u username:token
 ```
 
-### Run Individual Pipeline
+### Timeline
 
-```bash
-# Build only
-curl -X POST http://jenkins:8080/job/ec2-creator-build/build -u user:token
-
-# QA only (requires build artifacts)
-curl -X POST http://jenkins:8080/job/ec2-creator-qa/build -u user:token
-
-# Deploy only (requires source code)
-curl -X POST http://jenkins:8080/job/ec2-creator-deploy-local/build -u user:token
-
-# Integration tests only (requires running API)
-curl -X POST http://jenkins:8080/job/ec2-creator-integration-test/build -u user:token
 ```
+0:00  BUILD starts
+0:15  ✓ BUILD done → stash → trigger TEST
+0:25  ✓ TEST done → trigger DEPLOY
+0:35  ✓ DEPLOY done (server running) → trigger VALIDATE
+0:40  ✓ VALIDATE done (server killed) → ALL DONE
+```
+
+**Total:** ~40 minutes
 
 ---
 
-## File Locations
+## Why This Design is Better
 
-### Pipeline Files
-```
-jenkins/deployment/
-├── Jenkinsfile.local.build                    (Build)
-├── Jenkinsfile.local.qa                       (QA)
-├── Jenkinsfile.local.deploy                   (Deploy)
-└── Jenkinsfile.local.integration-test         (Integration Test)
-```
+**Before (4 separate pipelines with duplication):**
+- Checkout: 4 times
+- Venv setup: 4 times
+- Install deps: 4 times
+- = **Wasted time & disk space**
 
-### Test Files
-```
-tests/
-├── __init__.py
-└── test_*.py                                  (Your unit tests)
-
-test_api.py                                    (Integration tests)
-```
-
-### Generated Artifacts
-```
-build-artifacts/
-  ├── test-results.xml
-  ├── coverage.xml
-  └── flake8-report.json
-
-qa-artifacts/
-  └── coverage-report/
-      └── index.html
-
-${WORKSPACE}/
-  ├── app.log                                  (Server logs)
-  └── api.pid                                  (Server process ID)
-
-integration-artifacts/
-  ├── integration-test-results.txt
-  └── test-reports/
-      └── integration-summary.txt
-```
+**Now (consolidated with stash/unstash):**
+- Checkout: 1 time (in BUILD)
+- Venv setup: 1 time (in BUILD)
+- Install deps: 1 time (in BUILD)
+- Reused by TEST, DEPLOY via `unstash`
+- = **Efficient, fast, clean**
 
 ---
 
-## Timeline Example
+## Artifact Locations
 
-```
-Start: 0:00  →  Build starts
-       0:15  →  ✓ Build done  →  QA starts
-       0:25  →  ✓ QA done     →  Deploy starts
-       0:35  →  ✓ Deploy done →  Tests start
-       0:40  →  ✓ Tests done  →  ALL COMPLETE ✓
-```
-
-**Total duration:** ~40 minutes from start to finish
+| Pipeline | Artifacts |
+|----------|-----------|
+| **BUILD** | build-artifacts/{test-results.xml, coverage.xml}, htmlcov/ |
+| **TEST** | coverage-report/index.html |
+| **DEPLOY** | app.log, /tmp/ec2-creator.pid |
+| **VALIDATE** | validation-artifacts/report.txt |
 
 ---
 
-## Success/Failure Indicators
+## Success Indicators
 
 ### All Green ✓
 ```
-BUILD ✓ → QA ✓ → DEPLOY ✓ → TEST ✓
-API running at: http://localhost:8000
-Swagger UI: http://localhost:8000/docs
-Ready for next stage (Docker/Kubernetes)
+BUILD ✓ → TEST ✓ → DEPLOY ✓ → VALIDATE ✓
+API running: http://localhost:8000
+All tests passed!
 ```
 
-### Build Failed ✗
+### BUILD Failed ✗
 ```
 BUILD ✗ (linting or unit test failed)
-→ Pipeline stops, QA/Deploy/Test do not run
-→ Fix code issues and retry
+→ Stop here. Fix code, retry BUILD.
 ```
 
-### QA Failed ✗
+### TEST Failed ✗
 ```
-BUILD ✓ → QA ✗ (coverage < 70% or security issue)
-→ Pipeline stops, Deploy/Test do not run
-→ Add more tests or fix security issues
-```
-
-### Deploy Failed ✗
-```
-BUILD ✓ → QA ✓ → DEPLOY ✗ (port in use or server crash)
-→ Pipeline stops, Test does not run
-→ Kill existing process: lsof -ti:8000 | xargs kill -9
-→ Retry deployment
+BUILD ✓ → TEST ✗ (coverage < 70% or security issue)
+→ Stop here. Add more tests or fix security issues, retry TEST.
 ```
 
-### Test Failed ✗
+### DEPLOY Failed ✗
 ```
-BUILD ✓ → QA ✓ → DEPLOY ✓ → TEST ✗
-→ Some API tests failed
-→ Review test results, check API logs
-→ Fix API code and retry from Build
+BUILD ✓ → TEST ✓ → DEPLOY ✗ (port in use or server crash)
+→ Stop here. Kill port 8000: lsof -ti:8000 | xargs kill -9
+→ Retry DEPLOY.
+```
 
-API still running at: http://localhost:8000
-Logs at: ${WORKSPACE}/app.log
+### VALIDATE Failed ✗
+```
+BUILD ✓ → TEST ✓ → DEPLOY ✓ → VALIDATE ✗ (test failures)
+→ API still running at http://localhost:8000
+→ Check logs: tail app.log
+→ Fix API, retry from BUILD.
 ```
 
 ---
 
 ## Quick Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
+| Problem | Fix |
+|---------|-----|
 | Port 8000 in use | `lsof -ti:8000 \| xargs kill -9` |
-| Tests failing | Check `test_api.py` output and API logs |
+| Build fails on tests | Create `tests/test_health.py` with basic test |
 | Coverage too low | Add more unit tests to `tests/` |
-| Build slow | Check network for pip install bottleneck |
-| API won't start | `tail app.log` to see error |
+| Server won't start | `tail app.log` to see error |
+| VALIDATE can't find PID file | Re-run DEPLOY pipeline |
 
 ---
 
-## Next Steps
+## Manual Run (No Jenkins)
 
-After all 4 pipelines pass:
-
-### 1. Deploy to Docker
 ```bash
-# Use Jenkinsfile.docker
-# Builds image, runs docker-compose, pushes to ECR
-```
-
-### 2. Deploy to Minikube
-```bash
-# Use Jenkinsfile.minikube
-# Pulls from ECR, deploys to local Kubernetes
-```
-
-### 3. Deploy to EKS
-```bash
-# Use Jenkinsfile.eks
-# Provisions EKS cluster, deploys to production AWS
-```
-
----
-
-## Key Commands
-
-### View API Status
-```bash
-curl http://localhost:8000/health
-```
-
-### View Instances
-```bash
-curl http://localhost:8000/instances
-```
-
-### View Server Logs
-```bash
-tail -f app.log
-```
-
-### Kill Server
-```bash
-kill $(cat api.pid)
-```
-
-### Run Tests Manually
-```bash
+# BUILD stage
+python3 -m venv venv
 source venv/bin/activate
-python test_api.py
+pip install -r requirements.txt
+flake8 app/ --max-line-length=120
+pytest tests/ -v --cov=app --cov-report=html
+
+# TEST stage (venv already active)
+pytest tests/ --cov=app --cov-fail-under=70
+python3 -c "grep -r 'api_key\|password\|secret' app/" || true
+
+# DEPLOY stage (start server in background)
+python -m uvicorn app.main:app --reload &
+sleep 3
+curl http://localhost:8000/health
+
+# VALIDATE stage (in another terminal)
+python3 test_api.py
+
+# Cleanup
+kill %1
 ```
 
 ---
 
-## Environment
+## Jenkins Job Names
 
-- **Python:** 3.11+
-- **API Port:** 8000
-- **API Host:** localhost
-- **Framework:** FastAPI with uvicorn
-- **Test Framework:** pytest
-- **Linter:** flake8
+- `ec2-creator-build` — Pipeline 1 (BUILD)
+- `ec2-creator-test` — Pipeline 2 (TEST)
+- `ec2-creator-deploy-local` — Pipeline 3 (DEPLOY)
+- `ec2-creator-validate` — Pipeline 4 (VALIDATE)
 
 ---
 
-**Documentation:** See `docs/JENKINS_LOCAL_PIPELINES.md` for detailed information.
+## Configuration
+
+| Setting | Value |
+|---------|-------|
+| Python version | 3.11 |
+| Venv location | ${WORKSPACE}/venv |
+| API host | localhost |
+| API port | 8000 |
+| PID file | /tmp/ec2-creator.pid |
+| Coverage threshold | 70% |
+| Max retries (health check) | 10 |
+| Max retries (VALIDATE wait) | 5 |
+
+---
+
+## Next Steps After Success
+
+Once all 4 pipelines pass:
+
+1. **Deploy to Docker** — `Jenkinsfile.docker` (build image, push to ECR)
+2. **Deploy to Minikube** — `Jenkinsfile.minikube` (test on local k8s)
+3. **Deploy to EKS** — `Jenkinsfile.eks` (production on AWS)
+
+---
+
+## See Also
+
+- Full details: `docs/JENKINS_LOCAL_PIPELINES.md`
+- Project docs: `docs/`

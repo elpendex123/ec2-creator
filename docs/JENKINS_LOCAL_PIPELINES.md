@@ -1,409 +1,307 @@
-# Local Deployment Pipeline Strategy
+# Local Deployment Pipelines — Consolidated Build, Test, Deploy, Validate
 
-Complete breakdown of Jenkins pipelines for building, testing, and deploying the EC2 Creator API locally.
-
-## Overview
-
-The local deployment uses **4 interconnected pipelines** that work together in sequence:
-
-```
-Build Pipeline → QA Pipeline → Deployment Pipeline → Integration Test Pipeline
-```
-
-Each pipeline is independent but triggers the next one on success, creating a complete CI/CD workflow.
+Complete guide to the 4-stage local CI/CD pipeline for the EC2 Creator API.
 
 ---
 
-## Pipeline 1: Build Pipeline
+## Overview: 15 Steps, 4 Pipelines, Zero Duplication
 
-**File:** `jenkins/deployment/Jenkinsfile.local.build`
-
-**Purpose:** Install dependencies, lint code, and run unit tests
-
-**Trigger:** Manual or webhook on code push
-
-### Stages
-
-| Stage | Purpose | Actions |
-|-------|---------|---------|
-| **Checkout** | Get source code | Clone repository |
-| **Setup Environment** | Create Python venv | Create virtual environment with Python 3.11 |
-| **Install Dependencies** | Install packages | Install from `requirements.txt` (FastAPI, pytest, etc.) |
-| **Lint Code** | Code quality check | Run flake8 on `app/` directory |
-| **Unit Tests** | Run tests | Execute pytest, generate coverage reports |
-| **Archive Artifacts** | Save reports | Store test results, coverage XML, flake8 reports |
-
-### Key Features
-
-- **Clean environment:** Fresh virtual environment per build
-- **Code coverage:** Generates HTML coverage reports (requires tests to exist)
-- **Linting:** Detects code style issues with flake8
-- **Artifact archiving:** Saves all reports for review
-- **Auto-trigger next:** On success, triggers QA pipeline
-
-### Configuration
-
-```bash
-# Environment variables set
-PYTHON_VERSION = '3.11'
-PROJECT_NAME = 'ec2-creator'
-VENV_DIR = '${WORKSPACE}/venv'
-
-# Timeout: 15 minutes
-# Keep last: 10 builds
+```
+PIPELINE 1: BUILD          PIPELINE 2: TEST           PIPELINE 3: DEPLOY        PIPELINE 4: VALIDATE
+(10-15 min)               (5-10 min)                (5-10 min)               (5-10 min)
+┌────────────────────┐    ┌────────────────────┐    ┌────────────────────┐    ┌────────────────────┐
+│ 1. Checkout        │    │ 6. Coverage        │    │ 9. Start Server    │    │ 12. Run Tests      │
+│ 2. Venv Setup      │───→│ 7. Security Scan   │───→│10. Health Check    │───→│13. Validate API    │
+│ 3. Install Deps    │    │ 8. Dep Check       │    │11. Verify Routes   │    │14. Performance     │
+│ 4. Lint            │    │                    │    │                    │    │15. Archive Results │
+│ 5. Unit Tests      │    │ (unstashes workspace)    │ (unstashes workspace)    │ (no unstash needed)│
+│                    │    │                    │    │ (starts server)    │    │ (connects to running│
+│ (stashes workspace)│    │ (triggers next)    │    │ (triggers next)    │    │  server, kills it) │
+└────────────────────┘    └────────────────────┘    └────────────────────┘    └────────────────────┘
 ```
 
-### Success Criteria
+**Key benefit:** Venv is installed ONCE in BUILD, then reused in TEST and DEPLOY via stash/unstash. No repeated work.
 
-✓ Code passes flake8 linting
+---
+
+## Pipeline 1: BUILD
+
+**File:** `jenkins/deployment/local/Jenkinsfile.build`
+
+**Purpose:** Initialize environment, lint code, run unit tests
+
+**Stages:**
+1. **Checkout** — Clone repository
+2. **Venv Setup** — Create Python virtual environment with Python 3.11
+3. **Install Dependencies** — Install packages from `requirements.txt`
+4. **Lint** — Run flake8 on `app/` directory (max-line-length=120)
+5. **Unit Tests** — Run pytest with coverage reporting
+6. **Stash Workspace** — Save venv + source for downstream pipelines
+
+**Key Features:**
+- Creates fresh virtual environment
+- Generates coverage HTML report
+- Archives test results (test-results.xml, coverage.xml)
+- Stashes entire workspace including venv
+- **Auto-triggers TEST pipeline on success**
+
+**Configuration:**
+- Timeout: 15 minutes
+- Keep last: 10 builds
+- Environment: `VENV_DIR = ${WORKSPACE}/venv`
+
+**Success Criteria:**
+✓ Code passes flake8 (no style violations)
 ✓ All unit tests pass
-✓ Code coverage > 0% (configurable)
-
-### Run Manually
-
-```bash
-curl -X POST http://jenkins:8080/job/ec2-creator-build/build \
-  -u username:token
-```
+✓ Stash completes without errors
 
 ---
 
-## Pipeline 2: QA Pipeline
+## Pipeline 2: TEST
 
-**File:** `jenkins/deployment/Jenkinsfile.local.qa`
+**File:** `jenkins/deployment/local/Jenkinsfile.test`
 
-**Purpose:** Perform code quality analysis and security scanning
+**Purpose:** Code quality analysis, security scanning, dependency checks
 
-**Trigger:** Automatically on Build pipeline success
+**Stages:**
+1. **Unstash Workspace** — Restore venv + source from BUILD (no checkout, no pip install)
+2. **Coverage Analysis** — Run pytest with coverage, enforce ≥ 70% threshold
+3. **Security Scan** — Check for hardcoded secrets, unsafe SQL patterns
+4. **Dependency Check** — List outdated packages and vulnerabilities
+5. **Archive Test Reports** — Save coverage report for HTML display
 
-### Stages
+**Key Features:**
+- NO checkout (uses unstashed source)
+- NO venv recreation (uses unstashed venv)
+- NO pip install (uses unstashed packages)
+- Enforces 70% code coverage minimum
+- Basic pattern matching for security issues
+- **Auto-triggers DEPLOY pipeline on success**
 
-| Stage | Purpose | Actions |
-|-------|---------|---------|
-| **Checkout** | Get source code | Clone repository |
-| **Setup Environment** | Create Python venv | Install dependencies silently |
-| **Code Coverage Analysis** | Coverage report | Run pytest with coverage metrics, enforce minimum threshold (70%) |
-| **Security Scanning** | Detect vulnerabilities | Check for hardcoded secrets, SQL injection patterns |
-| **Dependency Check** | Vulnerability scanning | Check for outdated packages and known vulnerabilities |
-| **Code Quality Metrics** | Generate metrics | Count lines of code, number of test files |
-| **Archive QA Reports** | Save reports | Store coverage and security reports |
+**Configuration:**
+- Timeout: 10 minutes
+- Keep last: 10 builds
+- Coverage threshold: ≥ 70%
 
-### Key Features
-
-- **Coverage enforcement:** Fails if coverage < 70% (configurable)
-- **Secret detection:** Basic pattern matching for API keys, passwords
-- **Dependency audit:** Lists outdated packages
-- **Auto-trigger next:** On success, triggers Deployment pipeline
-
-### Configuration
-
-```bash
-# Coverage threshold: 70%
-# Timeout: 10 minutes
-# Keep last: 10 builds
-```
-
-### Success Criteria
-
-✓ Code coverage ≥ 70%
+**Success Criteria:**
+✓ Coverage ≥ 70%
 ✓ No hardcoded secrets detected
-✓ Dependency audit passed
-
-### Coverage Report
-
-Generated at: `coverage-report/index.html`
+✓ No unsafe patterns found
 
 ---
 
-## Pipeline 3: Deployment Pipeline
+## Pipeline 3: DEPLOY
 
-**File:** `jenkins/deployment/Jenkinsfile.local.deploy`
+**File:** `jenkins/deployment/local/Jenkinsfile.deploy`
 
-**Purpose:** Start FastAPI server locally with health checks
+**Purpose:** Start FastAPI server, verify it's running
 
-**Trigger:** Automatically on QA pipeline success
+**Stages:**
+1. **Unstash Workspace** — Restore venv + source from BUILD
+2. **Pre-Deployment Checks** — Kill existing process on port 8000, verify app files exist
+3. **Start Server** — Launch uvicorn in background, save PID to `/tmp/ec2-creator.pid`
+4. **Health Check** — Poll `/health` endpoint (max 10 retries, 2s intervals)
+5. **Verify Routes** — Test `/instances` and `/docs` endpoints
+6. **Deployment Summary** — Print API details (URL, Swagger UI link, PID file location)
 
-### Stages
+**Key Features:**
+- NO checkout (uses unstashed source)
+- NO venv recreation (uses unstashed venv)
+- Kills any existing process on port 8000
+- Saves server PID to `/tmp/ec2-creator.pid` for VALIDATE to use
+- Server continues running after pipeline completes
+- Server logs written to `${WORKSPACE}/app.log`
+- **Auto-triggers VALIDATE pipeline on success**
 
-| Stage | Purpose | Actions |
-|-------|---------|---------|
-| **Checkout** | Get source code | Clone repository |
-| **Setup Environment** | Create Python venv | Install dependencies |
-| **Pre-Deployment Checks** | Verify readiness | Kill existing process on port 8000, verify app structure |
-| **Start API Server** | Launch app | Start uvicorn on `localhost:8000` |
-| **Health Check** | Verify startup | Poll `/health` endpoint (max 10 retries, 2s intervals) |
-| **Verify API Endpoints** | Test endpoints | Test `/health`, `/instances`, `/docs` endpoints |
-| **Deployment Summary** | Report status | Show API URLs and log file paths |
+**Configuration:**
+- Timeout: 15 minutes
+- Keep last: 5 builds
+- API Port: 8000
+- API Host: localhost
+- PID File: `/tmp/ec2-creator.pid`
 
-### Key Features
-
-- **Port cleanup:** Kills any existing process on 8000 before starting
-- **Health check polling:** Retries 10 times with 2-second intervals
-- **Endpoint validation:** Tests key endpoints after startup
-- **Background execution:** Server runs in background via nohup
-- **Auto-trigger next:** On success, triggers Integration Test pipeline
-
-### Configuration
-
-```bash
-# API Server
-API_HOST = 'localhost'
-API_PORT = '8000'
-
-# Server logs written to: ${WORKSPACE}/app.log
-# Server PID saved to: ${WORKSPACE}/api.pid
-
-# Timeout: 20 minutes
-# Keep last: 5 builds
+**Server Details After Success:**
 ```
-
-### Server Details
-
-```
-URL: http://localhost:8000
+API URL: http://localhost:8000
 Swagger UI: http://localhost:8000/docs
 ReDoc: http://localhost:8000/redoc
-Logs: ${WORKSPACE}/app.log
-PID: ${WORKSPACE}/api.pid
+PID File: /tmp/ec2-creator.pid
+Log File: ${WORKSPACE}/app.log
 ```
 
-### Success Criteria
-
+**Success Criteria:**
+✓ Port 8000 is available (or old process killed)
 ✓ Server starts without errors
-✓ `/health` endpoint responds with 200 OK
+✓ `/health` endpoint responds 200 OK
 ✓ `/instances` endpoint is accessible
-✓ Swagger UI loads successfully
-
-### Kill Server (When Needed)
-
-```bash
-# Option 1: Read PID from file
-kill $(cat api.pid)
-
-# Option 2: Kill by port
-lsof -ti:8000 | xargs kill -9
-```
+✓ Swagger UI loads (returns 200)
 
 ---
 
-## Pipeline 4: Integration Test Pipeline
+## Pipeline 4: VALIDATE
 
-**File:** `jenkins/deployment/Jenkinsfile.local.integration-test`
+**File:** `jenkins/deployment/local/Jenkinsfile.validate`
 
-**Purpose:** Run API integration tests against the deployed server
+**Purpose:** Run integration tests against running server
 
-**Trigger:** Automatically on Deployment pipeline success
+**Stages:**
+1. **Verify Server Running** — Check PID file exists and process is alive
+2. **Wait for Server** — Retry connecting to API (max 5 retries, 2s intervals)
+3. **Run Integration Tests** — Execute `test_api.py` script
+4. **Validate API Endpoints** — Test `/health`, `/instances`, `/openapi.json`, `/docs`
+5. **Performance Check** — Time responses from key endpoints
+6. **Generate Validation Report** — Create summary document
+7. **Stop Server** — Kill server process and clean up PID file
 
-### Stages
+**Key Features:**
+- NO checkout (not needed)
+- NO venv (tests don't require it, uses Python 3 directly)
+- Connects to already-running server from DEPLOY pipeline
+- Reads PID from `/tmp/ec2-creator.pid`
+- Validates all major endpoints
+- Measures response times
+- Kills server in `post { always }` block (guaranteed cleanup)
 
-| Stage | Purpose | Actions |
-|-------|---------|---------|
-| **Checkout** | Get source code | Clone repository |
-| **Setup Environment** | Create Python venv | Install dependencies |
-| **Pre-Test Verification** | Check API | Verify server is running on port 8000 |
-| **Run Integration Tests** | Execute tests | Run `test_api.py` script, capture results |
-| **Run Endpoint Validation** | Validate endpoints | Test all major endpoints directly |
-| **Performance Checks** | Measure latency | Time responses from key endpoints |
-| **Generate Test Report** | Create report | Compile test results into summary document |
-| **Archive Test Results** | Save results | Store all test artifacts |
+**Configuration:**
+- Timeout: 10 minutes
+- Keep last: 10 builds
+- API URL: `http://localhost:8000`
 
-### Key Features
+**Integration Tests Run (from test_api.py):**
+1. Health check — GET /health
+2. List instances — GET /instances
+3. Invalid instance type — POST with t2.large (expects 400)
+4. Invalid AMI — POST with invalid AMI (expects 400)
+5. Swagger UI — GET /docs (expects 200)
 
-- **Pre-test wait:** Retries 5 times to connect to API
-- **Integration tests:** Runs `test_api.py` which tests all CRUD operations
-- **Endpoint validation:** Direct curl tests to verify responses
-- **Performance metrics:** Measures response times
-- **Test reporting:** Generates comprehensive test report
-- **Success/failure messaging:** Shows clear status at end
-
-### Configuration
-
-```bash
-API_HOST = 'localhost'
-API_PORT = '8000'
-API_URL = 'http://localhost:8000'
-
-# Timeout: 15 minutes
-# Keep last: 10 builds
-```
-
-### Integration Tests (test_api.py)
-
-```
-1. Health Check - GET /health
-2. List Instances - GET /instances
-3. Invalid Instance Type - POST /instances with t2.large (should fail)
-4. Invalid AMI - POST /instances with invalid AMI (should fail)
-5. Swagger Docs - GET /docs
-```
-
-### Success Criteria
-
+**Success Criteria:**
+✓ Server process is running
 ✓ All 5 integration tests pass
 ✓ All endpoints respond with correct status codes
-✓ Performance is within acceptable ranges
-
-### Test Results Location
-
-```
-test-reports/integration-summary.txt
-```
+✓ Response times are reasonable
+✓ Server is killed cleanly at end
 
 ---
 
 ## Complete Workflow Example
 
-### Starting a Full Local Deployment
+### Starting a Full Pipeline Chain
 
+**Option 1: Jenkins UI**
+```
+1. Go to http://jenkins:8080/job/ec2-creator-build
+2. Click "Build Now"
+3. Wait for all 4 pipelines to complete
+```
+
+**Option 2: curl**
 ```bash
-# Option 1: Trigger Build pipeline in Jenkins UI
-# - Visit: http://jenkins:8080/job/ec2-creator-build
-# - Click "Build Now"
-
-# Option 2: Use curl
 curl -X POST http://jenkins:8080/job/ec2-creator-build/build \
   -u username:token
 ```
 
-### Pipeline Execution Flow
+### Pipeline Execution Timeline
 
 ```
-Time    Event                                Status
-────────────────────────────────────────────────────
-0:00    Build pipeline starts                [RUNNING]
-0:05    Dependencies installed              [RUNNING]
-0:08    Linting completed                   [RUNNING]
-0:12    Unit tests completed                [RUNNING]
-0:15    ✓ Build complete                    [SUCCESS]
-        → Triggers QA pipeline
-────────────────────────────────────────────────────
-0:16    QA pipeline starts                  [RUNNING]
-0:18    Coverage analysis: 75%              [RUNNING]
-0:20    Security scanning                   [RUNNING]
-0:23    ✓ QA complete                       [SUCCESS]
-        → Triggers Deployment pipeline
-────────────────────────────────────────────────────
-0:24    Deploy pipeline starts              [RUNNING]
-0:26    API server starting...              [RUNNING]
-0:29    Health check: ✓                     [RUNNING]
-0:30    ✓ Deployment complete               [SUCCESS]
-        → Triggers Integration Test pipeline
-────────────────────────────────────────────────────
-0:31    Integration test pipeline starts    [RUNNING]
-0:33    Running test_api.py                 [RUNNING]
-0:38    5/5 tests passed                    [RUNNING]
-0:40    ✓ All tests passed                  [SUCCESS]
-────────────────────────────────────────────────────
+Time    Stage                                   Status
+────────────────────────────────────────────────────────
+0:00    BUILD: Checkout                         [RUNNING]
+0:05    BUILD: Venv + Install                  [RUNNING]
+0:10    BUILD: Lint                            [RUNNING]
+0:12    BUILD: Unit Tests                      [RUNNING]
+0:15    ✓ BUILD complete                       [SUCCESS]
+        → Stash workspace
+        → Trigger TEST
+────────────────────────────────────────────────────────
+0:16    TEST: Unstash                          [RUNNING]
+0:17    TEST: Coverage                         [RUNNING]
+0:20    TEST: Security + Dependencies          [RUNNING]
+0:23    ✓ TEST complete                        [SUCCESS]
+        → Trigger DEPLOY
+────────────────────────────────────────────────────────
+0:24    DEPLOY: Unstash                        [RUNNING]
+0:25    DEPLOY: Pre-checks + Start Server      [RUNNING]
+0:28    DEPLOY: Health check + Routes          [RUNNING]
+0:32    ✓ DEPLOY complete                      [SUCCESS]
+        → Server running on localhost:8000
+        → Trigger VALIDATE
+────────────────────────────────────────────────────────
+0:33    VALIDATE: Verify Server                [RUNNING]
+0:35    VALIDATE: Integration Tests            [RUNNING]
+0:38    VALIDATE: API Validation + Performance [RUNNING]
+0:40    ✓ VALIDATE complete                    [SUCCESS]
+        → Kill server
+────────────────────────────────────────────────────────
 Total time: ~40 minutes from start to finish
-API ready at: http://localhost:8000
-```
-
----
-
-## Pipeline Interdependencies
-
-```
-Build Pipeline
-  ├─ Generates: test-results.xml, coverage.xml, flake8-report.json
-  └─ Success triggers: QA Pipeline
-
-QA Pipeline
-  ├─ Requires: Source code from Build
-  ├─ Generates: coverage-report/, qa-artifacts/
-  └─ Success triggers: Deployment Pipeline
-
-Deployment Pipeline
-  ├─ Requires: Clean source code
-  ├─ Generates: app.log, api.pid
-  ├─ Exposes: http://localhost:8000
-  └─ Success triggers: Integration Test Pipeline
-
-Integration Test Pipeline
-  ├─ Requires: Running API server
-  ├─ Generates: test-reports/, integration-test-results.txt
-  └─ Final output: Pass/Fail status
-```
-
----
-
-## Environment Variables Reference
-
-### Available in All Pipelines
-
-```bash
-PYTHON_VERSION = '3.11'
-PROJECT_NAME = 'ec2-creator'
-VENV_DIR = '${WORKSPACE}/venv'
-```
-
-### Deployment Pipeline Specific
-
-```bash
-API_PORT = '8000'
-API_HOST = 'localhost'
-```
-
-### Integration Test Pipeline Specific
-
-```bash
-API_URL = 'http://localhost:8000'
 ```
 
 ---
 
 ## Artifact Locations
 
-### Build Pipeline Artifacts
-
+### BUILD Pipeline
 ```
 build-artifacts/
-  ├─ test-results.xml          # JUnit test results
-  ├─ coverage.xml              # Coverage in XML format
-  └─ flake8-report.json        # Linting results
+  ├── test-results.xml         # JUnit format
+  └── coverage.xml             # Cobertura format
 ```
 
-### QA Pipeline Artifacts
-
+### TEST Pipeline
 ```
-qa-artifacts/
-  └─ coverage-report/          # HTML coverage report
-      ├─ index.html
-      ├─ status.json
-      └─ ...
+coverage-report/               # Published HTML report
+  ├── index.html
+  ├── status.json
+  └── ...
 ```
 
-### Deployment Pipeline Artifacts
-
+### DEPLOY Pipeline
 ```
 ${WORKSPACE}/
-  ├─ app.log                   # Server logs
-  └─ api.pid                   # Server process ID
+  ├── app.log                  # Server output
+  └── venv/                    # Python environment (stashed)
+
+/tmp/ec2-creator.pid           # Server process ID
 ```
 
-### Integration Test Pipeline Artifacts
-
+### VALIDATE Pipeline
 ```
-integration-artifacts/
-  ├─ integration-test-results.txt
-  └─ test-reports/
-      └─ integration-summary.txt
+validation-artifacts/
+  └── report.txt               # Test summary
+```
+
+---
+
+## Triggering Pipelines Manually (Skipping Earlier Stages)
+
+**Note:** This only works if earlier pipelines have already run and workspace is stashed.
+
+### Run TEST only (requires BUILD artifacts)
+```bash
+curl -X POST http://jenkins:8080/job/ec2-creator-test/build -u user:token
+```
+
+### Run DEPLOY only (requires BUILD artifacts)
+```bash
+curl -X POST http://jenkins:8080/job/ec2-creator-deploy-local/build -u user:token
+```
+
+### Run VALIDATE only (requires running server)
+```bash
+# First, ensure DEPLOY pipeline has run and server is still running
+curl -X POST http://jenkins:8080/job/ec2-creator-validate/build -u user:token
 ```
 
 ---
 
 ## Troubleshooting
 
-### Pipeline 1: Build fails on "Unit Tests"
+### BUILD Pipeline Fails at "Unit Tests"
 
-**Cause:** Tests directory may not exist
+**Cause:** Tests directory missing or no test files
 
-**Solution:**
+**Fix:**
 ```bash
-# Create tests directory
 mkdir -p tests
-touch tests/__init__.py
-
-# Add basic test
 cat > tests/test_health.py <<'EOF'
 import pytest
 from fastapi.testclient import TestClient
@@ -417,105 +315,103 @@ def test_health():
 EOF
 ```
 
-### Pipeline 3: Deployment fails - "Port already in use"
+### TEST Pipeline Fails at "Unstash"
 
-**Cause:** Another process is using port 8000
+**Cause:** BUILD pipeline didn't complete or stash failed
 
-**Solution:**
+**Fix:** Re-run BUILD pipeline
+
 ```bash
-# Kill existing process
-lsof -ti:8000 | xargs kill -9
-
-# Or change port in deployment stage
-# Modify API_PORT = '8001'
+curl -X POST http://jenkins:8080/job/ec2-creator-build/build -u user:token
 ```
 
-### Pipeline 4: Integration tests fail - "API not responding"
+### DEPLOY Pipeline Fails at "Health Check"
 
-**Cause:** API server didn't start or crashed
+**Cause:** Server didn't start, or dependencies missing
 
-**Check:**
+**Fix:**
+1. Check server logs: `tail -50 ${WORKSPACE}/app.log`
+2. Check if uvicorn is installed: `which uvicorn`
+3. Manually start server to debug:
 ```bash
-# View server logs
-tail -50 app.log
-
-# Check if process is running
-ps aux | grep uvicorn
-
-# Manually start server
+source venv/bin/activate
 python -m uvicorn app.main:app --reload
+```
+
+### VALIDATE Pipeline Fails at "Verify Server Running"
+
+**Cause:** PID file doesn't exist or process was killed
+
+**Fix:**
+1. Check if DEPLOY pipeline completed successfully
+2. Check if server is still running:
+```bash
+ps aux | grep uvicorn
+```
+3. Re-run DEPLOY pipeline:
+```bash
+curl -X POST http://jenkins:8080/job/ec2-creator-deploy-local/build -u user:token
+```
+
+### Port 8000 Still in Use
+
+**Manual cleanup:**
+```bash
+lsof -ti:8000 | xargs kill -9
 ```
 
 ---
 
 ## Manual Testing Without Jenkins
 
-If you want to run the stages manually without Jenkins:
-
-### Stage 1: Build
+To run all 4 stages manually:
 
 ```bash
+# Stage 1: BUILD
 python3 -m venv venv
-. venv/bin/activate
+source venv/bin/activate
 pip install -r requirements.txt
 flake8 app/ --max-line-length=120
-pytest tests/ -v
-```
+pytest tests/ -v --cov=app --cov-report=html
 
-### Stage 2: QA
+# Stage 2: TEST
+# (venv already active)
+pytest tests/ --cov=app --cov-fail-under=70
 
-```bash
-. venv/bin/activate
-pytest tests/ --cov=app --cov-report=html
-# Coverage report in: htmlcov/index.html
-```
+# Stage 3: DEPLOY
+# (venv already active)
+python -m uvicorn app.main:app --reload &
+sleep 3
+curl http://localhost:8000/health
 
-### Stage 3: Deploy
+# Stage 4: VALIDATE
+# (in new terminal, or after starting server in background)
+python3 test_api.py
 
-```bash
-. venv/bin/activate
-python -m uvicorn app.main:app --reload
-# Server at http://localhost:8000
-```
-
-### Stage 4: Integration Tests
-
-```bash
-. venv/bin/activate
-python test_api.py
+# Cleanup
+kill %1  # kill background uvicorn
 ```
 
 ---
 
-## Next Steps After All Pipelines Succeed
+## Next Steps
 
-Once all 4 pipelines pass locally:
+Once all 4 pipelines pass:
 
-1. **Deploy to Docker** (Local Container)
-   - Use `Jenkinsfile.docker`
-   - Builds image, runs in docker-compose
-   - Pushes to ECR
-
-2. **Deploy to Minikube** (Local Kubernetes)
-   - Use `Jenkinsfile.minikube`
-   - Pulls image from ECR
-   - Deploys to minikube cluster
-
-3. **Deploy to EKS** (Production)
-   - Use `Jenkinsfile.eks`
-   - Provisions EKS cluster
-   - Deploys to AWS
+1. **Deploy to Docker** — Use `Jenkinsfile.docker` to build image and push to ECR
+2. **Deploy to Minikube** — Use `Jenkinsfile.minikube` to test on local Kubernetes
+3. **Deploy to EKS** — Use `Jenkinsfile.eks` for production on AWS
 
 ---
 
-## Summary
+## Summary Table
 
-| Pipeline | Duration | Focus | Output |
-|----------|----------|-------|--------|
-| Build | 10-15 min | Lint, test | test-results.xml, coverage.xml |
-| QA | 5-10 min | Coverage, security | coverage-report/ |
-| Deploy | 5-10 min | Start server | app.log, running API |
-| Integration Test | 5-10 min | Endpoint tests | test-reports/ |
-| **Total** | **~40 min** | **Full CI/CD** | **Deployed & tested** |
+| Pipeline | Duration | What It Does | Workspace | Output |
+|----------|----------|--------------|-----------|--------|
+| BUILD | 10-15 min | Lint, test, stash | Creates + stashes | test-results.xml, coverage.xml |
+| TEST | 5-10 min | Coverage, security, deps | Unstashes (reuses) | coverage-report/ |
+| DEPLOY | 5-10 min | Start server, health check | Unstashes (reuses) | app.log, /tmp/ec2-creator.pid |
+| VALIDATE | 5-10 min | Integration tests, performance | Connects to running server | validation report, kills server |
+| **Total** | **~40 min** | **Full CI/CD cycle** | **Efficient reuse** | **Fully tested & deployed** |
 
-All 4 pipelines working together provide a complete local development, testing, and deployment workflow for the EC2 Creator API.
+No stage repeats work from earlier stages. Each pipeline has a single, focused responsibility.

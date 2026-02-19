@@ -1,6 +1,7 @@
 // Jenkinsfile.local.deploy
-// Stage 3: Local Deployment
-// Starts FastAPI server and performs health checks
+// Pipeline 3: Deploy — Start Server, Health Checks, Verify Routes
+// Reuses stashed workspace from BUILD pipeline
+// Starts server and keeps it running for VALIDATE pipeline
 
 pipeline {
     agent any
@@ -11,35 +12,21 @@ pipeline {
         VENV_DIR = "${WORKSPACE}/venv"
         API_PORT = '8000'
         API_HOST = 'localhost'
+        API_PID_FILE = '/tmp/ec2-creator.pid'
     }
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '5'))
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 15, unit: 'MINUTES')
         timestamps()
     }
 
     stages {
-        stage('Checkout') {
+        stage('Unstash Workspace') {
             steps {
-                checkout scm
+                unstash 'workspace'
                 script {
-                    echo "✓ Code checked out from repository"
-                }
-            }
-        }
-
-        stage('Setup Environment') {
-            steps {
-                script {
-                    sh '''
-                        echo "=== Setting up deployment environment ==="
-                        python3 -m venv ${VENV_DIR}
-                        . ${VENV_DIR}/bin/activate
-                        pip install --upgrade pip > /dev/null 2>&1
-                        pip install -r requirements.txt > /dev/null 2>&1
-                        echo "✓ Deployment environment ready"
-                    '''
+                    echo "✓ Workspace restored from BUILD pipeline"
                 }
             }
         }
@@ -50,24 +37,19 @@ pipeline {
                     sh '''
                         echo "=== Performing pre-deployment checks ==="
 
-                        # Check if port is already in use
+                        # Kill any existing process on the port
                         if lsof -Pi :${API_PORT} -sTCP:LISTEN -t >/dev/null 2>&1; then
-                            echo "⚠ Port ${API_PORT} is already in use, killing existing process..."
+                            echo "⚠ Port ${API_PORT} in use, killing existing process..."
                             lsof -ti :${API_PORT} | xargs kill -9 2>/dev/null || true
                             sleep 2
                         fi
 
-                        # Verify app structure
-                        if [ ! -f "app/main.py" ]; then
-                            echo "✗ app/main.py not found"
-                            exit 1
-                        fi
+                        # Remove stale PID file
+                        rm -f ${API_PID_FILE}
 
-                        # Verify config
-                        if [ ! -f "app/config.py" ]; then
-                            echo "✗ app/config.py not found"
-                            exit 1
-                        fi
+                        # Verify app structure
+                        [ -f "app/main.py" ] || { echo "✗ app/main.py not found"; exit 1; }
+                        [ -f "app/config.py" ] || { echo "✗ app/config.py not found"; exit 1; }
 
                         echo "✓ Pre-deployment checks passed"
                     '''
@@ -75,7 +57,7 @@ pipeline {
             }
         }
 
-        stage('Start API Server') {
+        stage('Start Server') {
             steps {
                 script {
                     sh '''
@@ -83,18 +65,17 @@ pipeline {
                         echo "=== Starting FastAPI server ==="
                         echo "Command: uvicorn app.main:app --host ${API_HOST} --port ${API_PORT}"
 
-                        # Start uvicorn in background and capture PID
+                        # Start uvicorn in background
                         nohup python -m uvicorn app.main:app --host ${API_HOST} --port ${API_PORT} > app.log 2>&1 &
                         API_PID=$!
-                        echo $API_PID > api.pid
 
-                        echo "API Server PID: $API_PID"
-                        echo "Waiting for server startup..."
-                        sleep 5
+                        # Save PID for VALIDATE pipeline to use
+                        echo $API_PID > ${API_PID_FILE}
+                        echo "Server PID: $API_PID (saved to ${API_PID_FILE})"
 
-                        # Show logs
-                        echo "=== Server logs ==="
-                        head -20 app.log || true
+                        sleep 3
+                        echo "=== Server startup logs ==="
+                        head -10 app.log || true
                     '''
                 }
             }
@@ -123,31 +104,25 @@ pipeline {
                         done
 
                         echo "✗ Health check failed after $MAX_RETRIES attempts"
-                        echo "Server logs:"
-                        cat app.log
+                        echo "=== Server logs ==="
+                        tail -30 app.log
                         exit 1
                     '''
                 }
             }
         }
 
-        stage('Verify API Endpoints') {
+        stage('Verify Routes') {
             steps {
                 script {
                     sh '''
                         . ${VENV_DIR}/bin/activate
-                        echo "=== Verifying API endpoints ==="
+                        echo "=== Verifying API routes ==="
 
-                        # Test health endpoint
-                        echo "Testing GET /health..."
-                        curl -s http://${API_HOST}:${API_PORT}/health | python -m json.tool
-
-                        # Test instances endpoint
-                        echo "Testing GET /instances..."
+                        echo "1. Testing GET /instances"
                         curl -s http://${API_HOST}:${API_PORT}/instances | python -m json.tool
 
-                        # Test API docs
-                        echo "Testing GET /docs..."
+                        echo -e "\n2. Testing Swagger UI"
                         STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${API_HOST}:${API_PORT}/docs)
                         if [ "$STATUS" = "200" ]; then
                             echo "✓ Swagger UI available at http://${API_HOST}:${API_PORT}/docs"
@@ -155,7 +130,7 @@ pipeline {
                             echo "⚠ Swagger UI returned status $STATUS"
                         fi
 
-                        echo "✓ API endpoint verification completed"
+                        echo -e "\n✓ Route verification completed"
                     '''
                 }
             }
@@ -165,14 +140,20 @@ pipeline {
             steps {
                 script {
                     sh '''
-                        echo "=== Deployment Summary ==="
-                        echo "API Server: Running on http://${API_HOST}:${API_PORT}"
-                        echo "Swagger UI: http://${API_HOST}:${API_PORT}/docs"
-                        echo "ReDoc: http://${API_HOST}:${API_PORT}/redoc"
-                        echo "PID File: ${WORKSPACE}/api.pid"
-                        echo "Log File: ${WORKSPACE}/app.log"
                         echo ""
-                        echo "✓ Local deployment completed successfully"
+                        echo "╔════════════════════════════════════════════════════════════════╗"
+                        echo "║              ✓ API SERVER DEPLOYED SUCCESSFULLY               ║"
+                        echo "╚════════════════════════════════════════════════════════════════╝"
+                        echo ""
+                        echo "API Server Details:"
+                        echo "  URL: http://${API_HOST}:${API_PORT}"
+                        echo "  Swagger UI: http://${API_HOST}:${API_PORT}/docs"
+                        echo "  ReDoc: http://${API_HOST}:${API_PORT}/redoc"
+                        echo "  PID File: ${API_PID_FILE}"
+                        echo "  Log File: ${WORKSPACE}/app.log"
+                        echo ""
+                        echo "Server is running — VALIDATE pipeline will now run tests..."
+                        echo ""
                     '''
                 }
             }
@@ -190,9 +171,9 @@ pipeline {
                     fi
 
                     # Kill the API process if it exists
-                    if [ -f "api.pid" ]; then
-                        kill $(cat api.pid) 2>/dev/null || true
-                        rm -f api.pid
+                    if [ -f "${API_PID_FILE}" ]; then
+                        kill $(cat ${API_PID_FILE}) 2>/dev/null || true
+                        rm -f ${API_PID_FILE}
                     fi
                 '''
             }
@@ -200,15 +181,8 @@ pipeline {
 
         success {
             script {
-                echo "✓ Deployment successful - API ready for integration testing"
-                build job: 'ec2-creator-integration-test', wait: true, propagate: false
-            }
-        }
-
-        always {
-            script {
-                echo "=== Workspace status ==="
-                sh 'du -sh . 2>/dev/null || true'
+                echo "✓ DEPLOY complete — triggering VALIDATE pipeline"
+                build job: 'ec2-creator-validate', wait: true, propagate: false
             }
         }
     }
