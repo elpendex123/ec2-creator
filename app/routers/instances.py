@@ -38,7 +38,11 @@ async def create_instance(
     if not validate_free_tier(request.instance_type, request.ami):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Instance type '{request.instance_type}' or AMI '{request.ami}' not allowed. Only t3.micro and t4g.micro instance types are free tier eligible.",
+            detail=(
+                f"Instance type '{request.instance_type}' or AMI '{request.ami}' "
+                "not allowed. Only t3.micro and t4g.micro instance types are "
+                "free tier eligible."
+            ),
         )
 
     # Get backend

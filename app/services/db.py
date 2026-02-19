@@ -52,7 +52,9 @@ class Database:
 
         now = datetime.utcnow()
         cursor.execute("""
-            INSERT INTO instances (id, name, public_ip, ami, instance_type, state, ssh_string, backend_used, created_at, updated_at)
+            INSERT INTO instances
+            (id, name, public_ip, ami, instance_type, state, ssh_string,
+             backend_used, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             instance_data["id"],

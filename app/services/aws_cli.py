@@ -94,17 +94,17 @@ class AwsCliBackend:
 
     def start(self, instance_id: str) -> Dict[str, str]:
         """Start a stopped EC2 instance."""
-        result = self._run_script("start_instance.sh", [instance_id])
+        self._run_script("start_instance.sh", [instance_id])
         return {"state": "running", "id": instance_id}
 
     def stop(self, instance_id: str) -> Dict[str, str]:
         """Stop a running EC2 instance."""
-        result = self._run_script("stop_instance.sh", [instance_id])
+        self._run_script("stop_instance.sh", [instance_id])
         return {"state": "stopped", "id": instance_id}
 
     def destroy(self, instance_id: str) -> Dict[str, str]:
         """Terminate an EC2 instance."""
-        result = self._run_script("destroy_instance.sh", [instance_id])
+        self._run_script("destroy_instance.sh", [instance_id])
         return {"state": "terminated", "id": instance_id}
 
 

@@ -97,17 +97,17 @@ class TerraformBackend:
 
     def start(self, instance_id: str) -> Dict[str, str]:
         """Start a stopped EC2 instance (delegates to AWS CLI)."""
-        result = self._run_script("tf_start.sh", [instance_id])
+        self._run_script("tf_start.sh", [instance_id])
         return {"state": "running", "id": instance_id}
 
     def stop(self, instance_id: str) -> Dict[str, str]:
         """Stop a running EC2 instance (delegates to AWS CLI)."""
-        result = self._run_script("tf_stop.sh", [instance_id])
+        self._run_script("tf_stop.sh", [instance_id])
         return {"state": "stopped", "id": instance_id}
 
     def destroy(self, instance_id: str) -> Dict[str, str]:
         """Destroy an EC2 instance via Terraform."""
-        result = self._run_script("tf_destroy.sh", [instance_id])
+        self._run_script("tf_destroy.sh", [instance_id])
         return {"state": "terminated", "id": instance_id}
 
 
