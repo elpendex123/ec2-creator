@@ -33,7 +33,7 @@ pipeline {
                     sh '''
                         . ${VENV_DIR}/bin/activate
                         echo "=== Analyzing code coverage ==="
-                        pytest tests/ \
+                        ${VENV_DIR}/bin/pytest tests/ \
                             --cov=app \
                             --cov-report=term-missing \
                             --cov-report=html:coverage-report \
@@ -94,13 +94,8 @@ pipeline {
 
     post {
         always {
-            publishHTML([
-                reportDir: 'coverage-report',
-                reportFiles: 'index.html',
-                reportName: 'Coverage Report',
-                allowMissing: true
-            ])
-
+            // publishHTML requires HTML Publisher plugin - optional, archive as backup
+            archiveArtifacts artifacts: 'coverage-report/**', allowEmptyArchive: true
             archiveArtifacts artifacts: 'test-artifacts/**', allowEmptyArchive: true
         }
 
