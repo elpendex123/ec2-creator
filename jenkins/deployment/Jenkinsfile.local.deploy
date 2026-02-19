@@ -1,0 +1,215 @@
+// Jenkinsfile.local.deploy
+// Stage 3: Local Deployment
+// Starts FastAPI server and performs health checks
+
+pipeline {
+    agent any
+
+    environment {
+        PYTHON_VERSION = '3.11'
+        PROJECT_NAME = 'ec2-creator'
+        VENV_DIR = "${WORKSPACE}/venv"
+        API_PORT = '8000'
+        API_HOST = 'localhost'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 20, unit: 'MINUTES')
+        timestamps()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    echo "✓ Code checked out from repository"
+                }
+            }
+        }
+
+        stage('Setup Environment') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Setting up deployment environment ==="
+                        python3 -m venv ${VENV_DIR}
+                        . ${VENV_DIR}/bin/activate
+                        pip install --upgrade pip > /dev/null 2>&1
+                        pip install -r requirements.txt > /dev/null 2>&1
+                        echo "✓ Deployment environment ready"
+                    '''
+                }
+            }
+        }
+
+        stage('Pre-Deployment Checks') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Performing pre-deployment checks ==="
+
+                        # Check if port is already in use
+                        if lsof -Pi :${API_PORT} -sTCP:LISTEN -t >/dev/null 2>&1; then
+                            echo "⚠ Port ${API_PORT} is already in use, killing existing process..."
+                            lsof -ti :${API_PORT} | xargs kill -9 2>/dev/null || true
+                            sleep 2
+                        fi
+
+                        # Verify app structure
+                        if [ ! -f "app/main.py" ]; then
+                            echo "✗ app/main.py not found"
+                            exit 1
+                        fi
+
+                        # Verify config
+                        if [ ! -f "app/config.py" ]; then
+                            echo "✗ app/config.py not found"
+                            exit 1
+                        fi
+
+                        echo "✓ Pre-deployment checks passed"
+                    '''
+                }
+            }
+        }
+
+        stage('Start API Server') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Starting FastAPI server ==="
+                        echo "Command: uvicorn app.main:app --host ${API_HOST} --port ${API_PORT}"
+
+                        # Start uvicorn in background and capture PID
+                        nohup python -m uvicorn app.main:app --host ${API_HOST} --port ${API_PORT} > app.log 2>&1 &
+                        API_PID=$!
+                        echo $API_PID > api.pid
+
+                        echo "API Server PID: $API_PID"
+                        echo "Waiting for server startup..."
+                        sleep 5
+
+                        # Show logs
+                        echo "=== Server logs ==="
+                        head -20 app.log || true
+                    '''
+                }
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Performing health check ==="
+
+                        MAX_RETRIES=10
+                        RETRY_COUNT=0
+
+                        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                            if curl -s -f http://${API_HOST}:${API_PORT}/health > /dev/null 2>&1; then
+                                echo "✓ Health check passed"
+                                curl -s http://${API_HOST}:${API_PORT}/health | python -m json.tool
+                                exit 0
+                            fi
+
+                            RETRY_COUNT=$((RETRY_COUNT + 1))
+                            echo "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying..."
+                            sleep 2
+                        done
+
+                        echo "✗ Health check failed after $MAX_RETRIES attempts"
+                        echo "Server logs:"
+                        cat app.log
+                        exit 1
+                    '''
+                }
+            }
+        }
+
+        stage('Verify API Endpoints') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Verifying API endpoints ==="
+
+                        # Test health endpoint
+                        echo "Testing GET /health..."
+                        curl -s http://${API_HOST}:${API_PORT}/health | python -m json.tool
+
+                        # Test instances endpoint
+                        echo "Testing GET /instances..."
+                        curl -s http://${API_HOST}:${API_PORT}/instances | python -m json.tool
+
+                        # Test API docs
+                        echo "Testing GET /docs..."
+                        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${API_HOST}:${API_PORT}/docs)
+                        if [ "$STATUS" = "200" ]; then
+                            echo "✓ Swagger UI available at http://${API_HOST}:${API_PORT}/docs"
+                        else
+                            echo "⚠ Swagger UI returned status $STATUS"
+                        fi
+
+                        echo "✓ API endpoint verification completed"
+                    '''
+                }
+            }
+        }
+
+        stage('Deployment Summary') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Deployment Summary ==="
+                        echo "API Server: Running on http://${API_HOST}:${API_PORT}"
+                        echo "Swagger UI: http://${API_HOST}:${API_PORT}/docs"
+                        echo "ReDoc: http://${API_HOST}:${API_PORT}/redoc"
+                        echo "PID File: ${WORKSPACE}/api.pid"
+                        echo "Log File: ${WORKSPACE}/app.log"
+                        echo ""
+                        echo "✓ Local deployment completed successfully"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            script {
+                sh '''
+                    echo "✗ Deployment failed"
+                    if [ -f "app.log" ]; then
+                        echo "=== Last 30 lines of server log ==="
+                        tail -30 app.log
+                    fi
+
+                    # Kill the API process if it exists
+                    if [ -f "api.pid" ]; then
+                        kill $(cat api.pid) 2>/dev/null || true
+                        rm -f api.pid
+                    fi
+                '''
+            }
+        }
+
+        success {
+            script {
+                echo "✓ Deployment successful - API ready for integration testing"
+                build job: 'ec2-creator-integration-test', wait: true, propagate: false
+            }
+        }
+
+        always {
+            script {
+                echo "=== Workspace status ==="
+                sh 'du -sh . 2>/dev/null || true'
+            }
+        }
+    }
+}

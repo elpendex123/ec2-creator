@@ -1,0 +1,252 @@
+// Jenkinsfile.local.integration-test
+// Stage 4: Integration Testing
+// Runs API integration tests against the deployed server
+
+pipeline {
+    agent any
+
+    environment {
+        PYTHON_VERSION = '3.11'
+        PROJECT_NAME = 'ec2-creator'
+        VENV_DIR = "${WORKSPACE}/venv"
+        API_HOST = 'localhost'
+        API_PORT = '8000'
+        API_URL = 'http://localhost:8000'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 15, unit: 'MINUTES')
+        timestamps()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    echo "✓ Code checked out from repository"
+                }
+            }
+        }
+
+        stage('Setup Environment') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Setting up integration test environment ==="
+                        python3 -m venv ${VENV_DIR}
+                        . ${VENV_DIR}/bin/activate
+                        pip install --upgrade pip > /dev/null 2>&1
+                        pip install -r requirements.txt > /dev/null 2>&1
+                        echo "✓ Test environment ready"
+                    '''
+                }
+            }
+        }
+
+        stage('Pre-Test Verification') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Verifying API server is running ==="
+
+                        MAX_RETRIES=5
+                        RETRY_COUNT=0
+
+                        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                            if curl -s -f ${API_URL}/health > /dev/null 2>&1; then
+                                echo "✓ API server is accessible"
+                                curl -s ${API_URL}/health | python -m json.tool
+                                exit 0
+                            fi
+
+                            RETRY_COUNT=$((RETRY_COUNT + 1))
+                            echo "Waiting for API server... (attempt $RETRY_COUNT/$MAX_RETRIES)"
+                            sleep 2
+                        done
+
+                        echo "✗ API server is not responding"
+                        exit 1
+                    '''
+                }
+            }
+        }
+
+        stage('Run Integration Tests') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Running API integration tests ==="
+
+                        # Run test_api.py script
+                        python test_api.py 2>&1 | tee integration-test-results.txt
+                        TEST_RESULT=${PIPESTATUS[0]}
+
+                        if [ $TEST_RESULT -eq 0 ]; then
+                            echo "✓ Integration tests passed"
+                        else
+                            echo "⚠ Some integration tests failed"
+                        fi
+
+                        exit $TEST_RESULT
+                    '''
+                }
+            }
+        }
+
+        stage('Run Endpoint Validation') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Validating all API endpoints ==="
+
+                        # Test all major endpoints
+                        echo "1. Testing GET /health"
+                        curl -s -X GET ${API_URL}/health | python -m json.tool || exit 1
+
+                        echo -e "\n2. Testing GET /instances"
+                        curl -s -X GET ${API_URL}/instances | python -m json.tool || exit 1
+
+                        echo -e "\n3. Testing OpenAPI schema"
+                        curl -s -X GET ${API_URL}/openapi.json | python -c "import sys, json; json.load(sys.stdin); print('✓ Valid OpenAPI schema')" || exit 1
+
+                        echo -e "\n4. Testing Swagger UI"
+                        STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${API_URL}/docs)
+                        if [ "$STATUS" = "200" ]; then
+                            echo "✓ Swagger UI is accessible"
+                        else
+                            echo "✗ Swagger UI returned status $STATUS"
+                            exit 1
+                        fi
+
+                        echo -e "\n✓ All endpoint validations passed"
+                    '''
+                }
+            }
+        }
+
+        stage('Performance Checks') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Running basic performance checks ==="
+
+                        echo "Measuring response times for key endpoints..."
+
+                        # Health check response time
+                        echo -n "Health endpoint: "
+                        time curl -s -X GET ${API_URL}/health > /dev/null
+
+                        # Instances endpoint response time
+                        echo -n "Instances endpoint: "
+                        time curl -s -X GET ${API_URL}/instances > /dev/null
+
+                        echo "✓ Performance checks completed"
+                    '''
+                }
+            }
+        }
+
+        stage('Generate Test Report') {
+            steps {
+                script {
+                    sh '''
+                        . ${VENV_DIR}/bin/activate
+                        echo "=== Generating integration test report ==="
+
+                        mkdir -p test-reports
+
+                        # Create summary report
+                        cat > test-reports/integration-summary.txt <<EOF
+Integration Test Report
+Generated: $(date)
+API URL: ${API_URL}
+
+Test Results:
+EOF
+
+                        cat integration-test-results.txt >> test-reports/integration-summary.txt || true
+
+                        echo "✓ Test report generated"
+                        cat test-reports/integration-summary.txt
+                    '''
+                }
+            }
+        }
+
+        stage('Archive Test Results') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Archiving test results ==="
+                        mkdir -p integration-artifacts
+                        cp integration-test-results.txt integration-artifacts/ 2>/dev/null || true
+                        cp -r test-reports integration-artifacts/ 2>/dev/null || true
+                        echo "✓ Test results archived"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'integration-artifacts/**', allowEmptyArchive: true
+
+            publishHTML([
+                reportDir: 'test-reports',
+                reportFiles: 'integration-summary.txt',
+                reportName: 'Integration Test Report',
+                allowMissing: true
+            ])
+        }
+
+        success {
+            script {
+                sh '''
+                    echo ""
+                    echo "╔════════════════════════════════════════════════════════════════╗"
+                    echo "║              ✓ ALL TESTS PASSED - READY FOR PRODUCTION         ║"
+                    echo "╚════════════════════════════════════════════════════════════════╝"
+                    echo ""
+                    echo "API URL: ${API_URL}"
+                    echo "Swagger UI: ${API_URL}/docs"
+                    echo "ReDoc: ${API_URL}/redoc"
+                    echo ""
+                    echo "Next steps:"
+                    echo "  1. Deploy to Docker (run Jenkinsfile.docker)"
+                    echo "  2. Or stop the server and push to production"
+                    echo ""
+                '''
+            }
+        }
+
+        failure {
+            script {
+                sh '''
+                    echo ""
+                    echo "╔════════════════════════════════════════════════════════════════╗"
+                    echo "║           ✗ INTEGRATION TESTS FAILED - SEE LOGS ABOVE          ║"
+                    echo "╚════════════════════════════════════════════════════════════════╝"
+                    echo ""
+                    echo "Review test results and fix issues before proceeding."
+                    echo ""
+                '''
+            }
+        }
+
+        always {
+            cleanWs(
+                deleteDirs: true,
+                patterns: [
+                    [pattern: '**/venv/**', type: 'INCLUDE']
+                ]
+            )
+        }
+    }
+}
