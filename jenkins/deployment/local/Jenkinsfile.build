@@ -68,8 +68,9 @@ pipeline {
                         fi
 
                         echo "Installing/updating dependencies from requirements.txt..."
-                        pip install -r requirements.txt
-                        echo "$CURRENT_HASH" > "$HASH_FILE"
+                        pip install --no-user -r requirements.txt
+                        mkdir -p "${VENV_DIR}"
+                        echo "$CURRENT_HASH" > "${HASH_FILE}"
                         echo "✓ Dependencies installed and hash saved"
                     '''
                 }
