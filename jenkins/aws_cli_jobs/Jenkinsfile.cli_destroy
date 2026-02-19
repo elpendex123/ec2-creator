@@ -1,0 +1,33 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'INSTANCE_ID', description: 'Instance ID to destroy')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('AWS CLI Destroy') {
+            steps {
+                script {
+                    sh '''
+                        echo "Destroying EC2 instance via AWS CLI..."
+                        cd aws_cli_bash_scripts
+                        bash -x ./destroy_instance.sh "${INSTANCE_ID}"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

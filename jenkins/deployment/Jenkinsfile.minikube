@@ -1,0 +1,87 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = 'ec2-provisioner'
+        ECR_REPO = credentials('ecr-repo')
+        ECR_IMAGE_TAG = 'latest'
+        MINIKUBE_PROFILE = 'minikube'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('ECR Login') {
+            steps {
+                script {
+                    sh '''
+                        echo "Logging into ECR..."
+                        aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
+                    '''
+                }
+            }
+        }
+
+        stage('Configure minikube ECR Secret') {
+            steps {
+                script {
+                    sh '''
+                        echo "Creating ECR pull secret in minikube..."
+                        kubectl delete secret ecr-secret --ignore-not-found=true
+                        kubectl create secret docker-registry ecr-secret \
+                          --docker-server=${ECR_REPO} \
+                          --docker-username=AWS \
+                          --docker-password=$(aws ecr get-login-password --region ${AWS_DEFAULT_REGION})
+                    '''
+                }
+            }
+        }
+
+        stage('Update Deployment Image') {
+            steps {
+                script {
+                    sh '''
+                        echo "Updating deployment image reference..."
+                        sed -i "s|ec2-provisioner:latest|${ECR_REPO}/${DOCKER_IMAGE}:${ECR_IMAGE_TAG}|g" k8s/deployment.yaml
+                        sed -i 's|imagePullPolicy: IfNotPresent|imagePullPolicy: Always|g' k8s/deployment.yaml
+                    '''
+                }
+            }
+        }
+
+        stage('kubectl apply') {
+            steps {
+                script {
+                    sh '''
+                        echo "Applying Kubernetes manifests to minikube..."
+                        kubectl apply -f k8s/configmap.yaml
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl apply -f k8s/service.yaml
+                    '''
+                }
+            }
+        }
+
+        stage('Verify Pods Running') {
+            steps {
+                script {
+                    sh '''
+                        echo "Waiting for pods to be ready..."
+                        kubectl wait --for=condition=ready pod -l app=ec2-provisioner --timeout=300s
+                        kubectl get pods -l app=ec2-provisioner
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

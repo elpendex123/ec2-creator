@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ec2-provisioner-api
+    ports:
+      - "8000:8000"
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - NOTIFICATION_EMAIL=${NOTIFICATION_EMAIL}
+      - BACKEND=${BACKEND}
+      - ECR_REPO=${ECR_REPO}
+      - ECR_IMAGE_TAG=${ECR_IMAGE_TAG}
+      - EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME}
+      - DB_PATH=/app/data/instances.db
+    volumes:
+      - sqlite_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  sqlite_data:
+    driver: local

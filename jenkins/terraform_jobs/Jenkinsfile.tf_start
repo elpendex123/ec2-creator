@@ -1,0 +1,33 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'INSTANCE_ID', description: 'Instance ID to start')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Terraform Start') {
+            steps {
+                script {
+                    sh '''
+                        echo "Starting EC2 instance via Terraform..."
+                        cd terraform_bash_scripts
+                        bash -x ./tf_start.sh "${INSTANCE_ID}"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

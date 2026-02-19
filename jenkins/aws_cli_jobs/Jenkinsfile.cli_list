@@ -1,0 +1,29 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('AWS CLI List') {
+            steps {
+                script {
+                    sh '''
+                        echo "Listing EC2 instances via AWS CLI..."
+                        cd aws_cli_bash_scripts
+                        bash -x ./list_instances.sh
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

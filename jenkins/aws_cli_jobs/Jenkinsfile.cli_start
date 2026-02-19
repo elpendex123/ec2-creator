@@ -1,0 +1,33 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'INSTANCE_ID', description: 'Instance ID to start')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('AWS CLI Start') {
+            steps {
+                script {
+                    sh '''
+                        echo "Starting EC2 instance via AWS CLI..."
+                        cd aws_cli_bash_scripts
+                        bash -x ./start_instance.sh "${INSTANCE_ID}"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ec2-provisioner
+  namespace: default
+  labels:
+    app: ec2-provisioner
+spec:
+  # For minikube: use NodePort
+  # type: NodePort
+
+  # For EKS: use LoadBalancer
+  type: LoadBalancer
+
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+    name: http
+
+  selector:
+    app: ec2-provisioner
+
+  # For LoadBalancer, optional settings:
+  # externalTrafficPolicy: Local
+  # sessionAffinity: None

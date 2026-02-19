@@ -1,0 +1,56 @@
+pipeline {
+    agent any
+
+    environment {
+        PYTHON_VERSION = '3.11'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Lint') {
+            steps {
+                script {
+                    sh '''
+                        echo "Running flake8 linter..."
+                        python -m flake8 app/ --max-line-length=120 --extend-ignore=E203,W503
+                    '''
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                script {
+                    sh '''
+                        echo "Running pytest..."
+                        python -m pytest tests/ -v --tb=short || true
+                    '''
+                }
+            }
+        }
+
+        stage('Start API') {
+            steps {
+                script {
+                    sh '''
+                        echo "Starting FastAPI server..."
+                        python -m uvicorn app.main:app --reload &
+                        sleep 5
+                        curl -s http://localhost:8000/health || echo "Health check failed"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

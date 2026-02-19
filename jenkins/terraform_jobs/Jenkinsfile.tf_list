@@ -1,0 +1,29 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Terraform List') {
+            steps {
+                script {
+                    sh '''
+                        echo "Listing EC2 instances from Terraform state..."
+                        cd terraform_bash_scripts
+                        bash -x ./tf_list.sh
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

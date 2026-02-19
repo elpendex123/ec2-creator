@@ -1,0 +1,131 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = 'ec2-provisioner'
+        ECR_REPO = credentials('ecr-repo')
+        ECR_IMAGE_TAG = 'latest'
+        EKS_CLUSTER_NAME = credentials('eks-cluster-name')
+        AWS_REGION = 'us-east-1'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Terraform Init (EKS)') {
+            steps {
+                script {
+                    sh '''
+                        echo "Initializing Terraform for EKS..."
+                        cd terraform/eks
+                        terraform init
+                    '''
+                }
+            }
+        }
+
+        stage('Terraform Apply (EKS)') {
+            steps {
+                script {
+                    sh '''
+                        echo "Applying Terraform for EKS cluster..."
+                        cd terraform/eks
+                        terraform apply -auto-approve \
+                          -var="cluster_name=${EKS_CLUSTER_NAME}" \
+                          -var="region=${AWS_REGION}" \
+                          -var="node_instance_type=t2.micro"
+                    '''
+                }
+            }
+        }
+
+        stage('Update kubeconfig') {
+            steps {
+                script {
+                    sh '''
+                        echo "Updating kubeconfig for EKS cluster..."
+                        aws eks update-kubeconfig \
+                          --name ${EKS_CLUSTER_NAME} \
+                          --region ${AWS_REGION}
+                    '''
+                }
+            }
+        }
+
+        stage('ECR Login') {
+            steps {
+                script {
+                    sh '''
+                        echo "Logging into ECR..."
+                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
+                    '''
+                }
+            }
+        }
+
+        stage('Create ECR Pull Secret') {
+            steps {
+                script {
+                    sh '''
+                        echo "Creating ECR pull secret in EKS..."
+                        kubectl delete secret ecr-secret -n default --ignore-not-found=true
+                        kubectl create secret docker-registry ecr-secret \
+                          --docker-server=${ECR_REPO} \
+                          --docker-username=AWS \
+                          --docker-password=$(aws ecr get-login-password --region ${AWS_REGION}) \
+                          -n default
+                    '''
+                }
+            }
+        }
+
+        stage('Update Deployment Image') {
+            steps {
+                script {
+                    sh '''
+                        echo "Updating deployment image reference..."
+                        sed -i "s|ec2-provisioner:latest|${ECR_REPO}/${DOCKER_IMAGE}:${ECR_IMAGE_TAG}|g" k8s/deployment.yaml
+                        sed -i 's|imagePullPolicy: IfNotPresent|imagePullPolicy: Always|g' k8s/deployment.yaml
+                        sed -i 's|emptyDir: {}|persistentVolumeClaim:\n           claimName: sqlite-pvc|g' k8s/deployment.yaml
+                    '''
+                }
+            }
+        }
+
+        stage('kubectl apply') {
+            steps {
+                script {
+                    sh '''
+                        echo "Applying Kubernetes manifests to EKS..."
+                        kubectl apply -f k8s/configmap.yaml
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl apply -f k8s/service.yaml
+                    '''
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    sh '''
+                        echo "Verifying deployment..."
+                        kubectl wait --for=condition=ready pod -l app=ec2-provisioner --timeout=300s -n default
+                        kubectl get pods -l app=ec2-provisioner -n default
+                        kubectl get svc ec2-provisioner -n default
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

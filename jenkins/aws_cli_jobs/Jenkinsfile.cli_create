@@ -1,0 +1,36 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'NAME', description: 'Instance name')
+        string(name: 'AMI', description: 'AMI ID')
+        string(name: 'INSTANCE_TYPE', defaultValue: 't2.micro', description: 'Instance type')
+        string(name: 'STORAGE_GB', defaultValue: '8', description: 'Storage size in GB')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('AWS CLI Create') {
+            steps {
+                script {
+                    sh '''
+                        echo "Creating EC2 instance via AWS CLI..."
+                        cd aws_cli_bash_scripts
+                        bash -x ./create_instance.sh "${NAME}" "${AMI}" "${INSTANCE_TYPE}" "${STORAGE_GB}"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

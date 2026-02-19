@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ec2-provisioner
+  namespace: default
+  labels:
+    app: ec2-provisioner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ec2-provisioner
+  template:
+    metadata:
+      labels:
+        app: ec2-provisioner
+    spec:
+      serviceAccountName: ec2-provisioner
+      containers:
+      - name: api
+        # For ECR: replace with your ECR image URI
+        # image: 123456789.dkr.ecr.us-east-1.amazonaws.com/ec2-provisioner:latest
+        image: ec2-provisioner:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: http
+
+        envFrom:
+        - configMapRef:
+            name: ec2-provisioner-config
+        - secretRef:
+            name: ec2-provisioner-secrets
+            optional: true
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+
+        volumeMounts:
+        - name: sqlite-data
+          mountPath: /app/data
+
+      volumes:
+      - name: sqlite-data
+        # For minikube: use emptyDir
+        emptyDir: {}
+        # For EKS: uncomment to use PVC
+        # persistentVolumeClaim:
+        #   claimName: sqlite-pvc
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ec2-provisioner
+  namespace: default

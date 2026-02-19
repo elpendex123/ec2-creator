@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ec2-provisioner-config
+  namespace: default
+data:
+  AWS_DEFAULT_REGION: "us-east-1"
+  BACKEND: "terraform"

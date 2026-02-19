@@ -1,0 +1,33 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'INSTANCE_ID', description: 'Instance ID to stop')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Terraform Stop') {
+            steps {
+                script {
+                    sh '''
+                        echo "Stopping EC2 instance via Terraform..."
+                        cd terraform_bash_scripts
+                        bash -x ./tf_stop.sh "${INSTANCE_ID}"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
