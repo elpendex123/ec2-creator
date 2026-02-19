@@ -61,10 +61,11 @@ pipeline {
                         CURRENT_HASH=$(sha256sum requirements.txt | awk '{print $1}')
                         HASH_FILE="${VENV_DIR}/.requirements.hash"
 
-                        if [ -f "$HASH_FILE" ]; then
+                        # Check if hash matches AND flake8 is actually installed
+                        if [ -f "$HASH_FILE" ] && which flake8 > /dev/null 2>&1; then
                             PREVIOUS_HASH=$(cat "$HASH_FILE")
                             if [ "$CURRENT_HASH" = "$PREVIOUS_HASH" ]; then
-                                echo "✓ requirements.txt unchanged, skipping pip install"
+                                echo "✓ requirements.txt unchanged and packages present, skipping pip install"
                                 exit 0
                             fi
                         fi
