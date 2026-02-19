@@ -145,8 +145,9 @@ pipeline {
 
         success {
             script {
-                echo "✓ BUILD complete — triggering TEST pipeline"
-                build job: 'ec2-creator-test', wait: true, propagate: false
+                echo "✓ BUILD complete"
+                // TODO: Trigger TEST pipeline once ec2-creator-test job is created
+                // build job: 'ec2-creator-test', wait: true, propagate: false
             }
         }
 
